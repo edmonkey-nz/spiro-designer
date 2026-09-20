@@ -49,6 +49,14 @@ are split into arc segments at tooth-space centres — never through a tooth —
 and each joint gets a splice plate with bolt and alignment-dowel holes plus
 match marks. Parts are nested onto sheets you can preview before exporting.
 
+**Cogs pack inside the rings.** A ring's interior is scrap, so smaller parts
+are packed into it first, tangent-placed and clustered toward the centre. Five
+cogs drop inside a 157-tooth ring, which is a whole sheet saved. It recurses,
+so a small ring nested inside a big one still gets its own interior filled.
+The one thing to watch is cut order: set your laser to cut inner shapes before
+outer ones, so the waste disc stays put until the ring outline goes last. The
+sheet view says so when anything is nested.
+
 **Export.** 1:1 SVG in millimetres with cut and engrave on separate layers,
 either per part or as nested sheets. The drawn pattern exports as SVG and PNG.
 Designs save and load as JSON, with a debounced autosave so a refresh never
@@ -72,7 +80,7 @@ src/
     features.ts   hub, bolt circles, cutouts, pen holes, labels
     segment.ts    oversized rings -> arc segments + splice plates
     curves.ts     hypo/epi/rack/cog-on-cog maths, closure and petal counts
-    nest.ts       shelf packing onto sheets
+    nest.ts       packs parts into ring interiors, then shelf packs sheets
     svg.ts        mm-exact SVG writer (the only place that knows SVG is Y-down)
     hershey.ts    single-stroke engraving font
     validate.ts   design rules, advisory rather than blocking
@@ -88,7 +96,7 @@ angles in radians. `src/geom` never imports React and never touches the DOM.
 ## Tests
 
 ```
-npm test          # 87 tests
+npm test          # 100 tests
 npm run typecheck
 ```
 
@@ -114,9 +122,13 @@ geometry.
 
 ## Known limits
 
-- Nesting is bounding-box shelf packing, not true outline nesting. Fine for
-  round parts on a big bed; swap `nest.ts` for a no-fit-polygon implementation
-  behind the same interface if sheet utilisation ever matters more.
+- The sheet pass is bounding-box shelf packing, not true outline nesting. Hole
+  filling is exact (a ring's interior really is a circle), but the parts that
+  end up side by side are placed by bounding box. Fine for round parts on a big
+  bed; swap `nest.ts` for a no-fit-polygon implementation behind the same
+  interface if sheet utilisation ever matters more.
+- Hole filling is greedy best-fit: the smallest hole that will take a part gets
+  first refusal. Like any greedy packer it can be beaten on specific inputs.
 - Splice plates assume a single-layer ring. A double-layer ring with staggered
   joints would be stronger and is a natural extension of `segment.ts`.
 - Internal ring roots meet the flanks without a fillet. The kerf rounds them to

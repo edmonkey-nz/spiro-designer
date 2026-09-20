@@ -9,8 +9,8 @@ import {
 } from '../src/geom/segment';
 import { defaultGearDefaults, newRingSpec } from '../src/geom/gear';
 import { bboxHeight, bboxWidth, circlePath, polar, TAU } from '../src/geom/types';
-import { nestParts, defaultNestOptions, sheetLayers } from '../src/geom/nest';
-import { buildCog, newCogSpec } from '../src/geom/gear';
+import { nestParts, defaultNestOptions, sheetLayers, boundingCircle, packInHole } from '../src/geom/nest';
+import { buildCog, buildRing, newCogSpec } from '../src/geom/gear';
 
 const d = () => ({ ...defaultGearDefaults(), chordTol: 0.02 });
 const opts = defaultSegmentOptions();
@@ -233,5 +233,147 @@ describe('polar helper', () => {
     const p = polar(37, 1.1);
     expect(Math.hypot(p.x, p.y)).toBeCloseTo(37, 12);
     expect(Math.atan2(p.y, p.x)).toBeCloseTo(1.1, 12);
+  });
+});
+
+describe('packing parts into ring interiors', () => {
+  const defs = d();
+  const ring = buildRing({ ...newRingSpec('r', 150), rimWidth: 20 }, defs, 0.18);
+  const cogs = [40, 32, 24, 24, 18].map((t, i) => buildCog(newCogSpec(`c${i}_${t}`, t), defs, 0.18));
+
+  it('reports an empty interior for a ring and none for a cog', () => {
+    expect(ring.meta.innerHoleR).toBeCloseTo(ring.meta.tipR, 9);
+    expect(ring.meta.innerHoleR).toBeGreaterThan(200);
+    for (const c of cogs) expect(c.meta.innerHoleR).toBe(0);
+  });
+
+  it('puts cogs inside the ring rather than beside it', () => {
+    const res = nestParts([ring, ...cogs]);
+    const nested = res.sheets.flatMap((s) => s.placements).filter((p) => p.insideOf === ring.id);
+    expect(nested.length).toBeGreaterThan(0);
+    expect(res.sheets.flatMap((s) => s.placements)).toHaveLength(1 + cogs.length);
+  });
+
+  it('needs fewer sheets than packing everything side by side', () => {
+    const withHoles = nestParts([ring, ...cogs], { ...defaultNestOptions(), fillHoles: true });
+    const without = nestParts([ring, ...cogs], { ...defaultNestOptions(), fillHoles: false });
+    expect(withHoles.sheets.length).toBeLessThanOrEqual(without.sheets.length);
+    expect(withHoles.sheets[0]!.nested).toBeGreaterThan(0);
+    expect(without.sheets.flatMap((s) => s.placements).every((p) => !p.insideOf)).toBe(true);
+  });
+
+  it('never overlaps two parts, nested or not', () => {
+    // In sheet coordinates: either the two bounding circles are disjoint, or
+    // one sits wholly inside the other's hole.
+    const res = nestParts([ring, ...cogs]);
+    for (const sheet of res.sheets) {
+      const circles = sheet.placements.map((pl) => {
+        const c = boundingCircle(pl.part);
+        const cos = Math.cos(pl.rotation);
+        const sin = Math.sin(pl.rotation);
+        return {
+          part: pl.part,
+          x: c.x * cos - c.y * sin + pl.dx,
+          y: c.x * sin + c.y * cos + pl.dy,
+          r: c.r,
+          hole: pl.part.meta.innerHoleR,
+        };
+      });
+      for (let i = 0; i < circles.length; i++) {
+        for (let j = i + 1; j < circles.length; j++) {
+          const a = circles[i]!;
+          const b = circles[j]!;
+          const dist = Math.hypot(a.x - b.x, a.y - b.y);
+          const disjoint = dist >= a.r + b.r - 1e-6;
+          const bInsideA = a.hole > 0 && dist + b.r <= a.hole + 1e-6;
+          const aInsideB = b.hole > 0 && dist + a.r <= b.hole + 1e-6;
+          expect(disjoint || bInsideA || aInsideB).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('keeps nested parts clear of the ring teeth', () => {
+    const res = nestParts([ring, ...cogs]);
+    const all = res.sheets.flatMap((s) => s.placements);
+    const host = all.find((p) => p.part.id === ring.id)!;
+    for (const pl of all.filter((p) => p.insideOf === ring.id)) {
+      const c = boundingCircle(pl.part);
+      const dist = Math.hypot(pl.dx + c.x - host.dx, pl.dy + c.y - host.dy);
+      expect(dist + c.r).toBeLessThanOrEqual(ring.meta.innerHoleR + 1e-6);
+    }
+  });
+
+  it('leaves a part too big for the hole outside it', () => {
+    // The 150T ring's hole is 222mm in radius; a 160T cog is 243mm.
+    const fat = buildCog(newCogSpec('fat', 160), defs, 0.18);
+    const res = nestParts([ring, fat]);
+    const placement = res.sheets.flatMap((s) => s.placements).find((p) => p.part.id === 'fat')!;
+    expect(placement.insideOf).toBeUndefined();
+  });
+
+  it('fills a ring nested inside a bigger ring', () => {
+    const big = buildRing({ ...newRingSpec('big', 150), rimWidth: 20 }, defs, 0.18);
+    const small = buildRing({ ...newRingSpec('small', 60), rimWidth: 12 }, defs, 0.18);
+    const tiny = buildCog(newCogSpec('tiny', 16), defs, 0.18);
+    const all = nestParts([big, small, tiny]).sheets.flatMap((s) => s.placements);
+    expect(all.find((p) => p.part.id === 'small')?.insideOf).toBe('big');
+    expect(all.find((p) => p.part.id === 'tiny')?.insideOf).toBe('small');
+  });
+
+  it('releases passengers when their container will not fit the bed', () => {
+    const huge = buildRing({ ...newRingSpec('huge', 400), rimWidth: 20 }, defs, 0.18);
+    const cog = buildCog(newCogSpec('rider', 24), defs, 0.18);
+    const res = nestParts([huge, cog]);
+    expect(res.rejected.map((p) => p.id)).toEqual(['huge']);
+    const placed = res.sheets.flatMap((s) => s.placements);
+    expect(placed.map((p) => p.part.id)).toEqual(['rider']);
+    expect(placed[0]!.insideOf).toBeUndefined();
+  });
+});
+
+describe('packInHole', () => {
+  it('centres a single item', () => {
+    const [pos] = packInHole(100, [{ r: 20 }], 5);
+    expect(pos).toEqual({ x: 0, y: 0 });
+  });
+
+  it('keeps every item inside the hole with the gap respected', () => {
+    const items = [{ r: 30 }, { r: 25 }, { r: 25 }, { r: 18 }, { r: 18 }, { r: 12 }];
+    const gap = 4;
+    const positions = packInHole(120, items, gap);
+    const placed = positions
+      .map((p, i) => (p ? { ...p, r: items[i]!.r } : null))
+      .filter((p): p is { x: number; y: number; r: number } => p !== null);
+    expect(placed.length).toBeGreaterThan(3);
+    for (const p of placed) expect(Math.hypot(p.x, p.y) + p.r + gap).toBeLessThanOrEqual(120 + 1e-6);
+    for (let i = 0; i < placed.length; i++) {
+      for (let j = i + 1; j < placed.length; j++) {
+        const a = placed[i]!;
+        const b = placed[j]!;
+        expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(a.r + b.r + gap - 1e-6);
+      }
+    }
+  });
+
+  it('refuses an item bigger than the hole', () => {
+    expect(packInHole(30, [{ r: 40 }], 2)).toEqual([null]);
+  });
+});
+
+describe('boundingCircle', () => {
+  it('uses the exact outer radius for a round part', () => {
+    const cog = buildCog(newCogSpec('c', 40), d(), 0.18);
+    const c = boundingCircle(cog);
+    expect(c.x).toBe(0);
+    expect(c.y).toBe(0);
+    expect(c.r).toBeCloseTo(cog.meta.outerR, 9);
+  });
+
+  it('falls back to the bbox circumcircle for an arc segment', () => {
+    const seg = segmentRing({ ...newRingSpec('s', 400), rimWidth: 25 }, d(), 0.18, opts).segments[0]!;
+    const c = boundingCircle(seg);
+    const b = seg.meta.bbox;
+    expect(c.r).toBeCloseTo(Math.hypot(bboxWidth(b), bboxHeight(b)) / 2, 6);
   });
 });

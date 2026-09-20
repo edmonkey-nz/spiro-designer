@@ -273,6 +273,8 @@ export function segmentRing(
         tipR: inner.radii.tip,
         rootR: inner.radii.root,
         outerR,
+        // An arc is not an annulus: nothing can be packed "inside" it.
+        innerHoleR: 0,
         penHoles: [],
         warnings: [],
       }),
@@ -318,6 +320,7 @@ export function segmentRing(
         tipR: 0,
         rootR: 0,
         outerR: plateOut,
+        innerHoleR: 0,
         penHoles: [],
         warnings: [],
       }),

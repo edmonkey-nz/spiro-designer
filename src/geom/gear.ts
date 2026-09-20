@@ -251,6 +251,7 @@ export function buildCog(spec: CogSpec, defaults: GearDefaults, kerf: number): P
     tipR: profile.radii.tip,
     rootR: profile.radii.root,
     outerR: profile.radii.tip,
+    innerHoleR: 0,
     penHoles: holes,
     warnings,
   });
@@ -306,11 +307,9 @@ export function buildRing(spec: RingSpec, defaults: GearDefaults, kerf: number):
     cut.push(circlePath(0, 0, outerR + kerf / 2, chordTol));
   }
 
-  if (spec.hub.crosshair) {
-    const hub = hubPaths({ ...spec.hub, boltCount: 0 }, kerf, chordTol);
-    cut.push(...hub.cut);
-    engrave.push(...hub.engrave);
-  }
+  // No hub features on a ring. Its centre is a hole, so a centre crosshair
+  // would be engraved onto scrap — and it would foul any part the nester packs
+  // into the interior.
 
   if (spec.mount.enabled) {
     // Default the bolt circle to the middle of the rim.
@@ -337,6 +336,8 @@ export function buildRing(spec: RingSpec, defaults: GearDefaults, kerf: number):
     tipR: inner.radii.tip,
     rootR: inner.radii.root,
     outerR,
+    // The tooth tips are the innermost material, so everything inside is free.
+    innerHoleR: inner.radii.tip,
     penHoles: [],
     warnings,
   });
@@ -405,6 +406,7 @@ export function buildRack(spec: RackSpec, defaults: GearDefaults, kerf: number):
     tipR: 0,
     rootR: 0,
     outerR: 0,
+    innerHoleR: 0,
     penHoles: [],
     warnings: [],
   });

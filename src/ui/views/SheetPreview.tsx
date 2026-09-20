@@ -27,6 +27,16 @@ export function SheetPreview({
   const result = useMemo(() => nestParts(parts, opts), [parts, opts]);
   const sheet = result.sheets[Math.min(sheetIndex, Math.max(0, result.sheets.length - 1))];
 
+  const anyNested = result.sheets.some((s) => s.nested > 0);
+  const allNotes = anyNested
+    ? [
+        ...notes,
+        'Parts are nested inside the ring interiors, which would otherwise be scrap. ' +
+          'Set your laser to cut inner shapes before outer ones, so the waste disc — and ' +
+          'everything cut from it — stays put until the ring outline goes last.',
+      ]
+    : notes;
+
   const view = useMemo(
     () =>
       pan.view ??
@@ -108,6 +118,7 @@ export function SheetPreview({
         {sheet ? (
           <span>
             {sheet.placements.length} part{sheet.placements.length === 1 ? '' : 's'} on this sheet
+            {sheet.nested > 0 ? `, ${sheet.nested} nested inside` : ''}
           </span>
         ) : null}
         {sheet ? <span className="muted">{Math.round(sheet.utilisation * 100)}% of the sheet used</span> : null}
@@ -115,9 +126,9 @@ export function SheetPreview({
           <span className="warn">{result.rejected.length} part(s) too big for the bed</span>
         ) : null}
       </div>
-      {notes.length > 0 ? (
+      {allNotes.length > 0 ? (
         <ul className="notes">
-          {notes.map((n, i) => (
+          {allNotes.map((n, i) => (
             <li key={i}>{n}</li>
           ))}
         </ul>

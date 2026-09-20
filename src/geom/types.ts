@@ -59,6 +59,12 @@ export type PartMeta = {
   rootR: number;
   /** Outermost radius of the material, including a ring's rim. */
   outerR: number;
+  /**
+   * Radius of a concentric empty circle at the part's centre, or 0 if there is
+   * none. Rings report their tooth-tip radius: the interior of a ring is just
+   * scrap, so the nester packs smaller parts into it.
+   */
+  innerHoleR: number;
   bbox: BBox;
   penHoles: PenHole[];
   /** Total cut-path length, mm — a decent proxy for machine time. */
