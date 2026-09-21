@@ -15,6 +15,12 @@ npm run dev     # http://127.0.0.1:5173
 
 Static app, nothing leaves your machine. Designs save as JSON.
 
+![The simulator: a 96/30 pair tracing two pen holes at once, with the generated
+gear outlines rolling in real time](spiro-ui.png)
+
+![The Sheets tab: seven parts on one 900x600 sheet, three of them nested inside
+the ring interiors, ready to export as 1:1 SVG](spiro-output.png)
+
 ## Cut the fit coupon first
 
 `Export fit-test coupon` gives you a small cog and a matching ring arc at your
