@@ -12,6 +12,8 @@
  */
 
 import { TAU, type Pt } from './types';
+import { isCircle, pitchCurveForTeeth, type PitchCurve, type RingShape } from './shape';
+import { rollingState } from './shapedRing';
 
 export type RollMode = 'inside-ring' | 'outside-ring' | 'rack' | 'cog-on-cog';
 
@@ -35,7 +37,34 @@ export interface CurveSpec {
   penTheta: number;
   /** Teeth on the rack, which bounds how far a rack run can travel. */
   rackTeeth?: number;
+  /**
+   * Pitch curve of the fixed ring. Omitted, or a circle, gives the ordinary
+   * closed-form hypotrochoid; anything else rolls along the real curve.
+   */
+  shape?: RingShape;
 }
+
+/**
+ * Pitch curves are built from a few thousand samples, which is far too much to
+ * redo for every frame of an animation, so they are cached on the inputs that
+ * define them.
+ */
+const trackCache = new Map<string, PitchCurve>();
+const TRACK_CACHE_LIMIT = 24;
+
+function trackFor(s: CurveSpec): PitchCurve | null {
+  if (!s.shape || isCircle(s.shape) || s.mode !== 'inside-ring') return null;
+  const key = JSON.stringify([s.shape, s.fixedTeeth, s.module]);
+  const hit = trackCache.get(key);
+  if (hit) return hit;
+  const built = pitchCurveForTeeth(s.shape, s.fixedTeeth, s.module);
+  if (trackCache.size >= TRACK_CACHE_LIMIT) trackCache.delete(trackCache.keys().next().value as string);
+  trackCache.set(key, built);
+  return built;
+}
+
+/** Is this setup rolling inside a non-circular ring? */
+export const isShapedRun = (s: CurveSpec): boolean => trackFor(s) !== null;
 
 export const greatestCommonDivisor = (a: number, b: number): number => {
   let x = Math.abs(Math.round(a));
@@ -60,6 +89,13 @@ export const rollingRadius = (s: CurveSpec): number => (s.module * s.rollingTeet
  */
 export function carrierState(s: CurveSpec, theta: number): { centre: Pt; rotation: number } {
   const r = rollingRadius(s);
+
+  // A non-circular ring has no closed form, so walk the real pitch curve. One
+  // carrier turn is one lap of the ring, which keeps every closure count below
+  // working unchanged.
+  const track = trackFor(s);
+  if (track) return rollingState(track, r, (theta / TAU) * track.length);
+
   if (s.mode === 'rack') {
     return { centre: { x: r * theta, y: r }, rotation: -theta };
   }

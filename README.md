@@ -35,6 +35,27 @@ tooth half-angle. No polygon-offset library, and no surprises.
 **Four rolling modes.** Cog inside a ring (hypotrochoid), cog outside a ring
 (epitrochoid), cog on a fixed cog, and cog along a straight rack.
 
+**Rings that are not circles.** A cog rolls inside any smooth closed curve, so
+rings can be eggs, ovals, rounded triangles, flowers or plain blobs, set by one
+or two harmonics (lobe count, depth, phase). The patterns are a long way from
+the usual spirograph.
+
+Two physical conditions make it work, and the app enforces both:
+
+- *The perimeter must be a whole number of tooth pitches*, or the last tooth
+  collides with the first. So the shape is scaled to fit the tooth count rather
+  than the other way round — change the tooth count to change the size.
+- *The cog must fit the tightest bend.* It cannot reach into a corner sharper
+  than itself, so the shape's minimum radius of curvature caps the cog, and the
+  panel reports both.
+
+Each tooth is built for the circle that osculates the pitch curve where it
+sits, then placed by rotating it about that circle's centre. Where the curve
+dents inward the local equivalent flips to an *external* gear, because seen
+from the rolling cog that surface is convex; at an inflection it becomes a
+rack. With a constant curvature the whole construction collapses back to the
+ordinary circular ring exactly, which is one of the tests.
+
 **A simulator that cannot drift from the parts.** Press play and the *generated*
 gear outlines roll at the real centre distance while the pen traces. The pen
 offset is the engraved radius of an actual hole, so what you watch is what the
@@ -80,6 +101,8 @@ src/
     features.ts   hub, bolt circles, cutouts, pen holes, labels
     segment.ts    oversized rings -> arc segments + splice plates
     curves.ts     hypo/epi/rack/cog-on-cog maths, closure and petal counts
+    shape.ts      non-circular pitch curves: arc length, curvature, offsets
+    shapedRing.ts one tooth period per pitch along a curve, and rolling on it
     nest.ts       packs parts into ring interiors, then shelf packs sheets
     svg.ts        mm-exact SVG writer (the only place that knows SVG is Y-down)
     hershey.ts    single-stroke engraving font
@@ -96,7 +119,7 @@ angles in radians. `src/geom` never imports React and never touches the DOM.
 ## Tests
 
 ```
-npm test          # 100 tests
+npm test          # 127 tests
 npm run typecheck
 ```
 
@@ -112,7 +135,14 @@ same formulas the code under test uses. Highlights:
   and not before;
 - the Tusi couple (pen on the pitch circle, `R = 2r`) must come out as a dead
   straight line, which pins the rolling relation;
-- a 100mm circle must measure 100 user units in the exported SVG.
+- a 100mm circle must measure 100 user units in the exported SVG;
+- a cog is rolled all the way round a blobby ring and checked for collision at
+  every step, against a spatial index rather than a radius-versus-angle
+  profile — a blob's teeth tilt far enough off-radial that the boundary doubles
+  back, and a radial measurement quietly compares the wrong pair of teeth. The
+  clearance that survives is the designed backlash, to within a few microns;
+- a ring whose "shape" is a circle must reproduce the circular ring exactly,
+  and rolling inside it must reproduce the closed-form hypotrochoid.
 
 Dimensional assertions are stated against the flattening tolerance rather than
 a fixed number of decimal places. Chords always fall inside the true curve, so
@@ -135,3 +165,13 @@ geometry.
   ~0.09mm anyway and the loads are low, but a shaper-generated trochoid would
   be more correct.
 - Profile shift applies to external cogs only; rings stay standard.
+- A non-circular ring assumes curvature is constant across one tooth. That is
+  the standard construction, and the error shows up directly as a step between
+  neighbouring teeth, which the builder measures and warns about — under 0.02mm
+  for every built-in shape, against a 0.18mm kerf. Very deep lobes on a coarse
+  tooth count will exceed it.
+- Outer teeth are circle-only. The outside of a blob is a different curve whose
+  perimeter is not a whole number of pitches, so it would need its own scaling.
+- A non-circular ring's root fillets follow whichever equivalent gear applies,
+  so a concave stretch gets trochoidal roots and a convex one does not. It is
+  invisible at the sizes involved, but it is not uniform.

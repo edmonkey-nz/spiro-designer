@@ -67,6 +67,7 @@ export function App() {
             mode: setup.mode,
             fixedSpec: design.parts.find((p) => p.id === setup.fixedPartId),
             rollingSpec: design.parts.find((p) => p.id === setup.rollingPartId),
+            fixedPart: parts.find((p) => p.id === setup.fixedPartId),
           },
           design.defaults,
           primary,

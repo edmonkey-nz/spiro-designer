@@ -132,6 +132,8 @@ export interface SetupRef {
   mode: CurveSpec['mode'];
   fixedSpec?: PartSpec;
   rollingSpec?: PartSpec;
+  /** The built fixed part, needed for the bend limits of a non-circular ring. */
+  fixedPart?: Part;
 }
 
 /** Rules that only make sense for a *pairing* rather than a single part. */
@@ -160,7 +162,44 @@ export function validateSetup(setup: SetupRef, defaults: GearDefaults, curve: Cu
     }
   }
 
-  if (setup.mode === 'inside-ring' && fixedSpec) {
+  // A non-circular ring is limited by its tightest bend, not by tooth counts:
+  // the cog physically cannot reach into a corner sharper than itself.
+  const shaped = setup.fixedPart?.meta.shaped;
+  if (shaped && setup.mode === 'inside-ring') {
+    const module = moduleOf(rollingSpec, defaults);
+    const cogR = (rollingSpec.teeth * module) / 2;
+    const maxTeeth = Math.floor((2 * shaped.minConvexRho) / module);
+    if (cogR >= shaped.minConvexRho) {
+      issues.push({
+        severity: 'error',
+        message:
+          `The ring pinches to a ${shaped.minConvexRho.toFixed(0)}mm radius, tighter than this ` +
+          `${rollingSpec.teeth}-tooth cog at ${cogR.toFixed(0)}mm. It cannot reach into the corners — ` +
+          `use ${maxTeeth} teeth or fewer, or reduce the lobe amplitude.`,
+        code: 'blob-too-tight',
+      });
+    } else if (shaped.minConvexRho - cogR < 5 * module) {
+      issues.push({
+        severity: 'warning',
+        message:
+          `Only ${(shaped.minConvexRho - cogR).toFixed(0)}mm between the cog and the ring's tightest ` +
+          `bend. Tips foul as they come into mesh below about ${(5 * module).toFixed(0)}mm; ` +
+          `${maxTeeth - 10} teeth or fewer is comfortable.`,
+        code: 'blob-tight',
+      });
+    }
+    if (shaped.maxJointGap > defaults.chordTol * 4) {
+      issues.push({
+        severity: 'warning',
+        message:
+          `Neighbouring teeth on the ring step by ${shaped.maxJointGap.toFixed(2)}mm because the ` +
+          'curvature changes quickly. Raise the tooth count or soften the lobes.',
+        code: 'blob-joint',
+      });
+    }
+  }
+
+  if (setup.mode === 'inside-ring' && fixedSpec && !shaped) {
     const diff = fixedSpec.teeth - rollingSpec.teeth;
     if (diff <= 0) {
       issues.push({

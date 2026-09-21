@@ -131,3 +131,110 @@ export function meshClearanceExternal(
   }
   return { minClearance, atAngle };
 }
+
+/**
+ * A spatial index over a closed polygon, for clearance tests that cannot
+ * assume the boundary is single-valued in angle.
+ *
+ * `radialProfile` above is fine for a circular gear, whose profile really is
+ * a function of angle. A ring bent into a stadium or a flower is not: its
+ * teeth tilt up to 25 degrees off-radial, which is enough to make the
+ * boundary double back, and sorting those samples by angle silently
+ * interleaves teeth from different parts of the rim. Measuring against a
+ * proper index instead costs a little more and cannot lie.
+ */
+export class PolyIndex {
+  private readonly segs: { ax: number; ay: number; bx: number; by: number }[] = [];
+  private readonly cells = new Map<number, number[]>();
+  private readonly minX: number;
+  private readonly minY: number;
+  private readonly cell: number;
+  private readonly cols: number;
+
+  constructor(pts: Pt[]) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const p of pts) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    }
+    this.minX = minX;
+    this.minY = minY;
+    this.cell = Math.max((maxX - minX) / 256, (maxY - minY) / 256, 1e-6);
+    this.cols = Math.ceil((maxX - minX) / this.cell) + 2;
+
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i]!;
+      const b = pts[(i + 1) % pts.length]!;
+      const n = this.segs.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y }) - 1;
+      const x0 = this.ix(Math.min(a.x, b.x));
+      const x1 = this.ix(Math.max(a.x, b.x));
+      const y0 = this.iy(Math.min(a.y, b.y));
+      const y1 = this.iy(Math.max(a.y, b.y));
+      for (let gx = x0; gx <= x1; gx++) {
+        for (let gy = y0; gy <= y1; gy++) {
+          const key = gy * this.cols + gx;
+          const list = this.cells.get(key);
+          if (list) list.push(n);
+          else this.cells.set(key, [n]);
+        }
+      }
+    }
+  }
+
+  private ix = (x: number) => Math.floor((x - this.minX) / this.cell);
+  private iy = (y: number) => Math.floor((y - this.minY) / this.cell);
+
+  /** Ray cast along +x; robust enough for the well-conditioned profiles here. */
+  contains(p: Pt): boolean {
+    let inside = false;
+    for (const s of this.segs) {
+      if (s.ay > p.y !== s.by > p.y) {
+        const t = (p.y - s.ay) / (s.by - s.ay);
+        if (p.x < s.ax + t * (s.bx - s.ax)) inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  /**
+   * Shortest distance from the point to the boundary, giving up beyond
+   * `maxRings` grid cells.
+   *
+   * Searching outward until a hit is found is quadratic in the distance, and
+   * most of a cog sits tens of millimetres from the rim where the exact figure
+   * is of no interest. Only near misses matter, so the search stops early and
+   * reports Infinity for anything comfortably clear.
+   */
+  distanceTo(p: Pt, maxRings = 4): number {
+    let best = Infinity;
+    const gx = this.ix(p.x);
+    const gy = this.iy(p.y);
+    for (let ring = 0; ring <= maxRings; ring++) {
+      for (let dx = -ring; dx <= ring; dx++) {
+        for (let dy = -ring; dy <= ring; dy++) {
+          if (ring > 0 && Math.abs(dx) !== ring && Math.abs(dy) !== ring) continue;
+          const list = this.cells.get((gy + dy) * this.cols + (gx + dx));
+          if (!list) continue;
+          for (const i of list) best = Math.min(best, segDistance(p, this.segs[i]!));
+        }
+      }
+      // One extra ring past the first hit, since a nearer segment can sit
+      // diagonally in the next ring out.
+      if (best <= ring * this.cell) break;
+    }
+    return best;
+  }
+}
+
+function segDistance(p: Pt, s: { ax: number; ay: number; bx: number; by: number }): number {
+  const dx = s.bx - s.ax;
+  const dy = s.by - s.ay;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 < 1e-18 ? 0 : Math.max(0, Math.min(1, ((p.x - s.ax) * dx + (p.y - s.ay) * dy) / len2));
+  return Math.hypot(p.x - (s.ax + t * dx), p.y - (s.ay + t * dy));
+}

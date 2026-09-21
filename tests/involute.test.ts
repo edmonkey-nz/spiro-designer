@@ -112,13 +112,38 @@ describe('kerf compensation', () => {
     expectNear(b - a, 0.18 / Math.cos(alpha));
   });
 
-  it('pushes the tip out and the root in by kerf/2', () => {
+  it('grows the material by kerf/2 on every boundary of an external cog', () => {
+    // The rule is always "move the drawn line into the waste by kerf/2", so on
+    // a cog — where material lies inside the root circle — the tooth gets
+    // taller *and* the space between teeth gets shallower. Cutting a deeper
+    // space would leave less material than nominal, not more.
     const nominal = buildGearProfile(base({ teeth: 40, kerf: 0 }));
     const cut = buildGearProfile(base({ teeth: 40, kerf: 0.18 }));
     const rn = nominal.path.pts.map(radiusOf);
     const rc = cut.path.pts.map(radiusOf);
     expect(Math.max(...rc) - Math.max(...rn)).toBeCloseTo(0.09, 4);
+    expect(Math.min(...rc) - Math.min(...rn)).toBeCloseTo(0.09, 4);
+  });
+
+  it('grows the material by kerf/2 on every boundary of an internal ring', () => {
+    // Mirrored: a ring's material lies outside its tooth tips, so both the
+    // tips and the root move inward.
+    const nominal = buildGearProfile(base({ teeth: 96, internal: true, kerf: 0 }));
+    const cut = buildGearProfile(base({ teeth: 96, internal: true, kerf: 0.18 }));
+    const rn = nominal.path.pts.map(radiusOf);
+    const rc = cut.path.pts.map(radiusOf);
     expect(Math.min(...rc) - Math.min(...rn)).toBeCloseTo(-0.09, 4);
+    expect(Math.max(...rc) - Math.max(...rn)).toBeCloseTo(-0.09, 4);
+  });
+
+  it('keeps the cog tip clear of the ring root once both are cut', () => {
+    // Drawn profiles interfere by one kerf on purpose; what has to clear is
+    // the finished pair, which is the nominal geometry.
+    const m = 3;
+    const cog = gearRadii(base({ teeth: 32, module: m, kerf: 0.18 }));
+    const ring = gearRadii(base({ teeth: 96, module: m, internal: true, kerf: 0.18 }));
+    const centreDistance = ((96 - 32) * m) / 2;
+    expect(ring.root - (centreDistance + cog.tip)).toBeCloseTo(0.25 * m, 9);
   });
 
   it('leaves the nominal radii unchanged in the reported metadata', () => {

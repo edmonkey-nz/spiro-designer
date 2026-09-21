@@ -210,6 +210,7 @@ export function curveForSetup(
     penR: hole?.r ?? 0,
     penTheta: hole?.theta ?? 0,
     rackTeeth: fixedSpec?.kind === 'rack' ? fixedSpec.teeth : undefined,
+    shape: fixedSpec?.kind === 'ring' ? fixedSpec.shape : undefined,
   };
 }
 

@@ -70,6 +70,15 @@ export type PartMeta = {
   /** Total cut-path length, mm — a decent proxy for machine time. */
   cutLength: number;
   warnings: string[];
+  /** Present only on a non-circular ring. */
+  shaped?: {
+    /** Tightest convex bend, which bounds how big the rolling cog can be. */
+    minConvexRho: number;
+    /** Tightest concave bend, which bounds how thick the rim can be. */
+    minConcaveRho: number;
+    /** Largest step between neighbouring teeth, mm. */
+    maxJointGap: number;
+  };
 };
 
 export const TAU = Math.PI * 2;

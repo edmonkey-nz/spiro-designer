@@ -62,12 +62,27 @@ export const cogSpecSchema = z.object({
   penHoles: penHolesSchema,
 });
 
+/**
+ * Ring pitch-curve shape. Defaulted rather than required, so a design saved
+ * before shapes existed still loads as the circle it was.
+ */
+export const ringShapeSchema = z
+  .object({
+    lobes: z.number().int().min(0).max(12),
+    amplitude: z.number().min(-0.6).max(0.6),
+    lobes2: z.number().int().min(0).max(12),
+    amplitude2: z.number().min(-0.6).max(0.6),
+    phase2: z.number().min(-360).max(360),
+  })
+  .default({ lobes: 0, amplitude: 0, lobes2: 0, amplitude2: 0, phase2: 0 });
+
 export const ringSpecSchema = z.object({
   ...baseSpec,
   kind: z.literal('ring'),
   rimWidth: z.number().min(2).max(300),
   outerTeeth: z.boolean(),
   outerTeethCount: z.number().int().min(0).max(4000),
+  shape: ringShapeSchema,
 });
 
 export const rackSpecSchema = z.object({

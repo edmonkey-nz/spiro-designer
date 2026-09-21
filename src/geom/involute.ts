@@ -135,9 +135,32 @@ export interface GearProfile {
  * For an internal ring those swap: rInner is the (inward-pointing) tip circle
  * and rOuter is the root circle.
  */
-export function buildGearProfile(p: GearParams): GearProfile {
+export interface ToothPeriod {
+  /**
+   * Exactly one tooth pitch of profile, in gear coordinates, with the tooth
+   * *space* centred on angle 0 and spanning [-pi/z, +pi/z], ordered
+   * counter-clockwise. Repeating this z times gives the whole gear; placing
+   * copies of it along an arbitrary curve gives a non-circular one.
+   */
+  pts: Pt[];
+  radii: GearRadii;
+  /** Tooth count it was built for, which may be fractional. */
+  teeth: number;
+  pointed: boolean;
+  undercut: boolean;
+  warnings: string[];
+}
+
+/**
+ * Build one tooth period.
+ *
+ * `teeth` may be fractional here. A non-circular ring needs the tooth form of
+ * the circle that osculates its pitch curve at each tooth, and that circle's
+ * equivalent tooth count 2*rho/m is almost never a whole number.
+ */
+export function buildToothPeriod(p: GearParams): ToothPeriod {
   const warnings: string[] = [];
-  const z = Math.max(3, Math.round(p.teeth));
+  const z = Math.max(3, p.teeth);
   const m = p.module;
   const alpha = deg(p.pressureAngleDeg);
   const invAlpha = involuteFn(alpha);
@@ -160,7 +183,9 @@ export function buildGearProfile(p: GearParams): GearProfile {
     rOuter = radii.root - kh; // ring root sits closer in, keeping material
   } else {
     psi = toothThickness(p) / (2 * r) + kh / rb;
-    rInner = radii.root - kh;
+    // Material on an external gear lies *inside* the root circle, so growing it
+    // by the kerf means drawing a shallower space, not a deeper one.
+    rInner = radii.root + kh;
     rOuter = radii.tip + kh;
   }
 
@@ -217,7 +242,7 @@ export function buildGearProfile(p: GearParams): GearProfile {
     flankStartR = Math.max(flankStartR, troch.formRadius);
     if (undercut) {
       warnings.push(
-        `Undercut: with ${z} teeth the generating rack cuts into the involute flank. ` +
+        `Undercut: with ${Math.round(z)} teeth the generating rack cuts into the involute flank. ` +
           `Use at least ${minTeethWithoutUndercut(p)} teeth, or add profile shift.`,
       );
     }
@@ -280,22 +305,37 @@ export function buildGearProfile(p: GearParams): GearProfile {
   const phiOuter = Math.abs(Math.atan2(last.y, last.x));
   const rInnerActual = Math.hypot(first.x, first.y);
 
-  // ---- assemble the closed profile ---------------------------------------
+  // ---- assemble one period -----------------------------------------------
+  // Runs from one tooth centre to the next: half a root arc, up the flank,
+  // over the tip, down the mirrored flank, then half a root arc again.
   const pts: Pt[] = [];
   const mirrored = mirrorX(side).reverse();
+  const hasRootArc = phiInner < pitchAngle / 2 - 1e-12;
+  if (hasRootArc) {
+    pts.push(...arcPoints(0, 0, rInnerActual, -pitchAngle / 2, -phiInner, p.chordTol));
+  }
+  pts.push(...side);
+  if (!pointed && phiOuter > 1e-12) {
+    pts.push(...arcPoints(0, 0, rOuter, -phiOuter, phiOuter, p.chordTol));
+  }
+  pts.push(...mirrored);
+  if (hasRootArc) {
+    pts.push(...arcPoints(0, 0, rInnerActual, phiInner, pitchAngle / 2, p.chordTol));
+  }
+
+  return { pts: dedupe(pts, 1e-9), radii, teeth: z, pointed, undercut, warnings };
+}
+
+/** Repeat a tooth period around a full circular gear. */
+export function buildGearProfile(p: GearParams): GearProfile {
+  const z = Math.max(3, Math.round(p.teeth));
+  const period = buildToothPeriod({ ...p, teeth: z });
+  const pitchAngle = TAU / z;
+
+  const pts: Pt[] = [];
   for (let k = 0; k < z; k++) {
     const theta = k * pitchAngle;
-    // Bridge from the previous period: arc at the inner circle up to this side profile.
-    if (phiInner < pitchAngle / 2 - 1e-12) {
-      pts.push(
-        ...arcPoints(0, 0, rInnerActual, theta - pitchAngle / 2, theta - phiInner, p.chordTol),
-      );
-    }
-    for (const q of side) pts.push(rotatePt(q, theta));
-    if (!pointed && phiOuter > 1e-12) {
-      pts.push(...arcPoints(0, 0, rOuter, theta - phiOuter, theta + phiOuter, p.chordTol));
-    }
-    for (const q of mirrored) pts.push(rotatePt(q, theta));
+    for (const q of period.pts) pts.push(rotatePt(q, theta));
   }
 
   // 1 micron: 200x below the kerf, so this only ever removes numerical noise
@@ -303,7 +343,13 @@ export function buildGearProfile(p: GearParams): GearProfile {
   let ring = dropTinyBacktracks(dedupe(pts, 1e-7), 1e-3);
   if (signedArea(ring) < 0) ring = ring.reverse();
 
-  return { path: { pts: ring, closed: true }, radii, pointed, undercut, warnings };
+  return {
+    path: { pts: ring, closed: true },
+    radii: period.radii,
+    pointed: period.pointed,
+    undercut: period.undercut,
+    warnings: period.warnings,
+  };
 }
 
 interface TrochoidResult {
@@ -341,9 +387,9 @@ export function rackTrochoid(p: GearParams, radii: GearRadii, psi: number, rOute
   const r = radii.pitch;
   const kh = p.kerf / 2;
 
-  // Cut depth below the pitch line. The extra kerf/2 is what puts the *cut*
-  // root circle at the nominal root radius.
-  const hD = m * (p.addendum + p.clearance - p.profileShift) + kh;
+  // Cut depth below the pitch line. The rack tip generates the root circle, and
+  // cutting kerf/2 shallower is what leaves the *finished* root at nominal.
+  const hD = m * (p.addendum + p.clearance - p.profileShift) - kh;
 
   // Half-width of the rack tooth where it meets its tip line; the corner radius
   // has to fit inside that, and inside the clearance zone.

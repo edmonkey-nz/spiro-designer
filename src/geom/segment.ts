@@ -31,6 +31,8 @@ import {
   type Pt,
 } from './types';
 import { moduleOf, outerTeethFor, type GearDefaults, type RingSpec } from './gear';
+import { buildShapedRing } from './shapedRing';
+import { isCircle } from './shape';
 
 export interface SegmentOptions {
   bedWidth: number;
@@ -164,6 +166,7 @@ export function segmentRing(
   kerf: number,
   opts: SegmentOptions = defaultSegmentOptions(),
 ): SegmentResult {
+  if (!isCircle(spec.shape)) return segmentShapedRing(spec, defaults, kerf, opts);
   const warnings: string[] = [];
   const m = moduleOf(spec, defaults);
   const chordTol = defaults.chordTol;
@@ -350,4 +353,209 @@ function finishPart(
       cutLength: cut.reduce((s, p) => s + pathLength(p), 0),
     },
   };
+}
+
+/**
+ * Splitting a non-circular ring.
+ *
+ * `segmentRing` above cannot be reused: it slices by polar angle and assumes
+ * teeth sit at equal angles, which is only true of a circle. On a blob the
+ * teeth are equally spaced by *arc length*, so the split has to be counted in
+ * teeth and the boundaries taken from the placed tooth periods.
+ *
+ * The joint line falls out for free. A tooth boundary on the inner edge and
+ * the matching point on the offset rim share an arc position, so the straight
+ * line between them already runs along the pitch curve's normal.
+ */
+export function segmentShapedRing(
+  spec: RingSpec,
+  defaults: GearDefaults,
+  kerf: number,
+  opts: SegmentOptions = defaultSegmentOptions(),
+): SegmentResult {
+  const m = moduleOf(spec, defaults);
+  const chordTol = defaults.chordTol;
+  const kh = kerf / 2;
+  const base = {
+    module: m,
+    pressureAngleDeg: defaults.pressureAngleDeg,
+    addendum: defaults.addendum,
+    clearance: defaults.clearance,
+    backlash: defaults.backlash,
+    profileShift: 0,
+    filletCoeff: defaults.filletCoeff,
+    kerf,
+    chordTol,
+  };
+
+  const shaped = buildShapedRing(
+    { shape: spec.shape, teeth: spec.teeth, rimWidth: spec.rimWidth },
+    base,
+  );
+  const warnings = [...shaped.warnings];
+
+  const availW = opts.bedWidth - opts.margin * 2;
+  const availH = opts.bedHeight - opts.margin * 2;
+  const fits = (b: { w: number; h: number }) =>
+    (b.w <= availW && b.h <= availH) || (b.h <= availW && b.w <= availH);
+
+  const curve = shaped.curve;
+  const teeth = shaped.periods.length;
+  const rimDepth = (defaults.addendum + defaults.clearance) * m + spec.rimWidth + kh;
+
+  /** Inner and outer boundary of the arc covering teeth [from, to). */
+  const arcOf = (from: number, to: number): Pt[] => {
+    const inner: Pt[] = [];
+    for (let j = from; j < to; j++) inner.push(...shaped.periods[j % teeth]!);
+    // The rim, walked back the other way over the same arc range.
+    const s0 = ((from - 0.5) / teeth) * curve.length;
+    const s1 = ((to - 0.5) / teeth) * curve.length;
+    const steps = Math.max(16, (to - from) * 8);
+    const outer: Pt[] = [];
+    for (let i = steps; i >= 0; i--) {
+      const q = curve.at(s0 + ((s1 - s0) * i) / steps);
+      outer.push({ x: q.p.x - q.normalIn.x * rimDepth, y: q.p.y - q.normalIn.y * rimDepth });
+    }
+    return dedupe([...inner, ...outer], 1e-9);
+  };
+
+  const extentOf = (pts: Pt[]) => {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const p of pts) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    }
+    return { w: maxX - minX, h: maxY - minY };
+  };
+
+  if (fits(extentOf([...shaped.inner.pts, ...shaped.outer.pts]))) {
+    return { count: 1, segments: [], plates: [], warnings };
+  }
+
+  // Try progressively more segments. A blob's arcs differ in size, so every
+  // one has to be measured rather than assuming the worst is the average.
+  let count = 2;
+  let split: Pt[][] = [];
+  for (; count <= 32; count++) {
+    const per = distributeTeeth(teeth, count);
+    const bounds: number[] = [0];
+    for (const t of per) bounds.push(bounds[bounds.length - 1]! + t);
+    const arcs = per.map((_, i) => arcOf(bounds[i]!, bounds[i + 1]!));
+    if (arcs.every((a) => fits(extentOf(a)))) {
+      split = arcs;
+      break;
+    }
+  }
+  if (split.length === 0) {
+    warnings.push('Could not split this ring into bed-sized pieces — reduce the tooth count or the module.');
+    return { count: 1, segments: [], plates: [], warnings };
+  }
+
+  const per = distributeTeeth(teeth, count);
+  const bounds: number[] = [0];
+  for (const t of per) bounds.push(bounds[bounds.length - 1]! + t);
+
+  const rimMid = (defaults.addendum + defaults.clearance) * m + spec.rimWidth / 2;
+  if (spec.rimWidth < 18) {
+    warnings.push(
+      `Rim is only ${spec.rimWidth.toFixed(1)}mm wide; splice plates need about 18mm to take a ` +
+        `${opts.boltDia}mm bolt with material either side. Increase the rim width.`,
+    );
+  }
+
+  /** A point on the rim's mid-line, `offset` mm of arc past a joint. */
+  const rimAt = (jointTooth: number, offset: number): Pt => {
+    const s = ((jointTooth - 0.5) / teeth) * curve.length + offset;
+    const q = curve.at(s);
+    return { x: q.p.x - q.normalIn.x * rimMid, y: q.p.y - q.normalIn.y * rimMid };
+  };
+
+  const jointLetter = (i: number) => String.fromCharCode(65 + (i % 26));
+  const fixingOffsets = [...opts.boltOffsets.map((d) => ({ d, dia: opts.boltDia })), { d: opts.dowelOffset, dia: opts.dowelDia }];
+
+  const segments: Part[] = [];
+  for (let i = 0; i < count; i++) {
+    const cut: Path[] = [{ pts: split[i]!, closed: true }];
+    const engrave: Path[] = [];
+
+    for (const [joint, side] of [
+      [i, 1],
+      [(i + 1) % count, -1],
+    ] as const) {
+      for (const f of fixingOffsets) {
+        const p = rimAt(bounds[side === 1 ? i : i + 1]!, side * f.d);
+        const h = holePath(p.x, p.y, f.dia, kerf, chordTol);
+        if (h) cut.push(h);
+      }
+      const mark = rimAt(bounds[side === 1 ? i : i + 1]!, side * 6);
+      engrave.push(...flatLabel(jointLetter(joint), mark.x, mark.y, Math.min(5, spec.rimWidth * 0.3)));
+    }
+
+    const mid = rimAt(Math.floor((bounds[i]! + bounds[i + 1]!) / 2), 0);
+    engrave.push(...flatLabel(`SEG ${i + 1}/${count}`, mid.x, mid.y, Math.min(4.5, spec.rimWidth * 0.26)));
+
+    segments.push(
+      finishPart(`${spec.id}-seg${i + 1}`, `${spec.name} segment ${i + 1}/${count}`, 'ring', cut, engrave, {
+        teeth: per[i]!,
+        module: m,
+        pitchR: (teeth * m) / 2,
+        baseR: 0,
+        tipR: shaped.minR,
+        rootR: shaped.minR,
+        outerR: shaped.maxR,
+        innerHoleR: 0,
+        penHoles: [],
+        warnings: [],
+      }),
+    );
+  }
+
+  // Splice plates: straight-sided pieces spanning each joint, following the rim.
+  const plates: Part[] = [];
+  const span = Math.max(...opts.boltOffsets) + 10;
+  for (let i = 0; i < count; i++) {
+    const jointS = ((bounds[i]! - 0.5) / teeth) * curve.length;
+    const steps = 48;
+    const outer: Pt[] = [];
+    const inner: Pt[] = [];
+    for (let k = 0; k <= steps; k++) {
+      const s = jointS - span + (2 * span * k) / steps;
+      const q = curve.at(s);
+      const deep = (defaults.addendum + defaults.clearance) * m + 1 + kh;
+      const shallow = (defaults.addendum + defaults.clearance) * m + spec.rimWidth - 1 - kh;
+      inner.push({ x: q.p.x - q.normalIn.x * deep, y: q.p.y - q.normalIn.y * deep });
+      outer.push({ x: q.p.x - q.normalIn.x * shallow, y: q.p.y - q.normalIn.y * shallow });
+    }
+    const cut: Path[] = [{ pts: dedupe([...inner, ...outer.reverse()], 1e-9), closed: true }];
+    for (const side of [1, -1] as const) {
+      for (const f of fixingOffsets) {
+        const p = rimAt(bounds[i]!, side * f.d);
+        const h = holePath(p.x, p.y, f.dia, kerf, chordTol);
+        if (h) cut.push(h);
+      }
+    }
+    const at = rimAt(bounds[i]!, 0);
+    const engrave = flatLabel(`JOINT ${jointLetter(i)}`, at.x, at.y, Math.min(4, spec.rimWidth * 0.22));
+    plates.push(
+      finishPart(`${spec.id}-plate${i + 1}`, `${spec.name} splice ${jointLetter(i)}`, 'splice', cut, engrave, {
+        teeth: 0,
+        module: m,
+        pitchR: 0,
+        baseR: 0,
+        tipR: 0,
+        rootR: 0,
+        outerR: 0,
+        innerHoleR: 0,
+        penHoles: [],
+        warnings: [],
+      }),
+    );
+  }
+
+  return { count, segments, plates, warnings };
 }

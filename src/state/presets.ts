@@ -4,6 +4,7 @@
 
 import { newCogSpec, newRackSpec, newRingSpec, type CogSpec, type RingSpec } from '../geom/gear';
 import { defaultGearDefaults } from '../geom/gear';
+import { SHAPE_PRESETS } from '../geom/shape';
 import { defaultMachine, type Design } from './schema';
 import { SCHEMA_VERSION } from './schema';
 
@@ -109,6 +110,35 @@ export const presets: Preset[] = [
           fixedPartId: 'ring72',
           rollingPartId: 'cog29',
           penHoleIndices: [6],
+        },
+      ],
+    }),
+  },
+  {
+    id: 'blob',
+    name: 'Blob 132 / 31',
+    description: 'A non-circular ring. Same closure maths, a far stranger pattern.',
+    build: () => ({
+      ...base('Blob 132/31'),
+      parts: [
+        ring('ringBlob', 132, (r) => {
+          r.name = 'Blob ring 132T';
+          r.rimWidth = 18;
+          r.shape = { ...SHAPE_PRESETS.find((p) => p.id === 'blob')!.shape };
+          r.mount = { ...r.mount, enabled: true, count: 10 };
+        }),
+        cog('cog31', 31, (c) => {
+          c.penHoles = { ...c.penHoles, layout: 'radial-line', count: 8, dia: 5 };
+        }),
+      ],
+      setups: [
+        {
+          id: 's1',
+          name: 'Inside the blob',
+          mode: 'inside-ring',
+          fixedPartId: 'ringBlob',
+          rollingPartId: 'cog31',
+          penHoleIndices: [8],
         },
       ],
     }),

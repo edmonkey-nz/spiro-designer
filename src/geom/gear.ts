@@ -19,6 +19,7 @@ import {
   defaultPenHoles,
   flatLabel,
   generatePenHoles,
+  holePath,
   hubPaths,
   labelPaths,
   mountPaths,
@@ -38,7 +39,10 @@ import {
   type Part,
   type Path,
   type PenHole,
+  type Pt,
 } from './types';
+import { buildShapedRing } from './shapedRing';
+import { circleShape, isCircle, offsetOutward, pitchCurveForTeeth, type RingShape } from './shape';
 
 /** Tooth-form parameters shared by every part in a design. */
 export interface GearDefaults {
@@ -83,6 +87,8 @@ export interface RingSpec extends BaseSpec {
   outerTeeth: boolean;
   /** Tooth count of the outer set. 0 means "derive from the rim width". */
   outerTeethCount: number;
+  /** Pitch curve shape. A circle gives the ordinary ring. */
+  shape: RingShape;
 }
 
 export interface RackSpec {
@@ -123,6 +129,7 @@ export const newRingSpec = (id: string, teeth = 96): RingSpec => ({
   rimWidth: 15,
   outerTeeth: false,
   outerTeethCount: 0,
+  shape: circleShape(),
   label: true,
 });
 
@@ -276,6 +283,7 @@ export function minOuterTeeth(innerRootR: number, module: number, clearanceCoeff
 }
 
 export function buildRing(spec: RingSpec, defaults: GearDefaults, kerf: number): Part {
+  if (!isCircle(spec.shape)) return buildBlobRing(spec, defaults, kerf);
   const p = paramsFor(spec, defaults, kerf, true);
   const inner = buildGearProfile(p);
   const warnings = [...inner.warnings];
@@ -421,4 +429,104 @@ export function buildPart(spec: PartSpec, defaults: GearDefaults, kerf: number):
     case 'rack':
       return buildRack(spec, defaults, kerf);
   }
+}
+
+
+/**
+ * A ring whose pitch curve is not a circle.
+ *
+ * The teeth come from `shapedRing`, which lays one tooth period per pitch
+ * along the curve. What is left here is the furniture: fixings and the label
+ * have to follow the rim rather than sit on a bolt circle, because there is
+ * no single radius to put them at.
+ */
+function buildBlobRing(spec: RingSpec, defaults: GearDefaults, kerf: number): Part {
+  const m = moduleOf(spec, defaults);
+  const chordTol = defaults.chordTol;
+  const base = {
+    module: m,
+    pressureAngleDeg: defaults.pressureAngleDeg,
+    addendum: defaults.addendum,
+    clearance: defaults.clearance,
+    backlash: defaults.backlash,
+    profileShift: 0,
+    filletCoeff: defaults.filletCoeff,
+    kerf,
+    chordTol,
+  };
+
+  const shaped = buildShapedRing(
+    { shape: spec.shape, teeth: spec.teeth, rimWidth: spec.rimWidth },
+    base,
+  );
+  const warnings = [...shaped.warnings];
+
+  if (spec.outerTeeth) {
+    warnings.push(
+      'Outer teeth are only available on a circular ring. Running a cog around the outside of a ' +
+        'blob would need its own pitch curve, whose perimeter is a different number of tooth pitches.',
+    );
+  }
+
+  const cut: Path[] = [shaped.inner, shaped.outer];
+  const engrave: Path[] = [];
+
+  // Fixings follow the rim at constant depth, spaced by arc length.
+  if (spec.mount.enabled && spec.mount.count > 0) {
+    const curve = pitchCurveForTeeth(spec.shape, spec.teeth, m);
+    const depth = (defaults.addendum + defaults.clearance) * m + spec.rimWidth / 2;
+    const ring = offsetOutward(curve, depth, spec.mount.count);
+    for (const c of ring) {
+      const h = holePath(c.x, c.y, spec.mount.holeDia, kerf, chordTol);
+      if (h) cut.push(h);
+    }
+  }
+
+  if (spec.label) {
+    const curve = pitchCurveForTeeth(spec.shape, spec.teeth, m);
+    const depth = (defaults.addendum + defaults.clearance) * m + spec.rimWidth / 2;
+    const at = curve.at(curve.length * 0.25);
+    const where: Pt = { x: at.p.x - at.normalIn.x * depth, y: at.p.y - at.normalIn.y * depth };
+    const angle = Math.atan2(at.tangent.y, at.tangent.x);
+    engrave.push(
+      ...textLabelAt(`${spec.teeth}T M${m}`, where, angle, Math.min(5, spec.rimWidth * 0.3)),
+    );
+  }
+
+  return finish(spec, 'ring', { cut, engrave }, {
+    teeth: spec.teeth,
+    module: m,
+    // A blob has no single pitch radius; report the mean, which is the radius
+    // of the circle with the same perimeter.
+    pitchR: (spec.teeth * m) / 2,
+    baseR: 0,
+    tipR: shaped.minR,
+    rootR: shaped.minR,
+    outerR: shaped.maxR,
+    // Nesting needs the largest circle that fits, so use the closest approach.
+    innerHoleR: Math.max(0, shaped.minR),
+    penHoles: [],
+    warnings,
+    shaped: {
+      minConvexRho: shaped.minConvexRho,
+      minConcaveRho: shaped.minConcaveRho,
+      maxJointGap: shaped.maxJointGap,
+    },
+  });
+}
+
+/** Engraved text laid along a direction, used on rims that are not circular. */
+function textLabelAt(text: string, at: Pt, angle: number, size: number): Path[] {
+  const upright = Math.cos(angle) < 0 ? angle + Math.PI : angle;
+  return flatLabelRotated(text, at, upright, size);
+}
+
+function flatLabelRotated(text: string, at: Pt, angle: number, size: number): Path[] {
+  const flat = flatLabel(text, 0, 0, size);
+  const c = Math.cos(angle);
+  const sn = Math.sin(angle);
+  return flat.map((path) => ({
+    closed: path.closed,
+    pts: path.pts.map((q) => ({ x: at.x + q.x * c - q.y * sn, y: at.y + q.x * sn + q.y * c })),
+  }));
 }

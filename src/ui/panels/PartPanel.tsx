@@ -2,9 +2,10 @@
 
 import type { CogSpec, PartSpec, RackSpec, RingSpec } from '../../geom/gear';
 import { outerTeethFor, penHoleBand } from '../../geom/gear';
+import { SHAPE_PRESETS, circleShape, describeShape, isCircle } from '../../geom/shape';
 import type { Part } from '../../geom/types';
 import { useDesign } from '../../state/design';
-import { Button, NumberField, SelectField, Section, Stat, Toggle } from '../widgets';
+import { Button, NumberField, SelectField, Section, SliderField, Stat, Toggle } from '../widgets';
 
 export function PartPanel({ parts, onPickHole }: { parts: Part[]; onPickHole: (index: number) => void }) {
   const design = useDesign((s) => s.design);
@@ -62,7 +63,7 @@ export function PartPanel({ parts, onPickHole }: { parts: Part[]; onPickHole: (i
         <Section title={`Edit · ${spec.name}`} key={spec.id}>
           <CommonFields spec={spec} />
           {spec.kind === 'cog' ? <CogFields spec={spec} built={built} onPickHole={onPickHole} /> : null}
-          {spec.kind === 'ring' ? <RingFields spec={spec} /> : null}
+          {spec.kind === 'ring' ? <RingFields spec={spec} built={built} /> : null}
           {spec.kind === 'rack' ? <RackFields spec={spec} /> : null}
 
           {built ? (
@@ -302,11 +303,127 @@ function CutoutFields({ spec }: { spec: CogSpec | RingSpec }) {
   );
 }
 
-function RingFields({ spec }: { spec: RingSpec }) {
+function ShapeFields({ spec, built }: { spec: RingSpec; built?: Part }) {
+  const update = useUpdate(spec.id);
+  const shape = spec.shape;
+  const set = (patch: Partial<RingSpec['shape']>) =>
+    update({ shape: { ...shape, ...patch } } as Partial<PartSpec>);
+  const shaped = built?.meta.shaped;
+  const module = built?.meta.module ?? 3;
+
+  return (
+    <>
+      <h4 className="sub">Shape</h4>
+      <div className="chips">
+        {SHAPE_PRESETS.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            className={`chip${JSON.stringify(p.shape) === JSON.stringify(shape) ? ' on' : ''}`}
+            title={p.hint}
+            onClick={() => update({ shape: { ...p.shape } } as Partial<PartSpec>)}
+          >
+            {p.name}
+          </button>
+        ))}
+      </div>
+
+      <SliderField
+        label="Lobes"
+        value={shape.lobes}
+        onChange={(v) => set({ lobes: v })}
+        min={0}
+        max={8}
+        step={1}
+        hint="How many bulges go round the ring. 0 is a circle, 1 an egg, 2 an oval."
+        format={(v) => (v === 0 ? 'circle' : String(v))}
+      />
+      {shape.lobes > 0 ? (
+        <SliderField
+          label="Depth"
+          value={shape.amplitude}
+          onChange={(v) => set({ amplitude: v })}
+          min={0}
+          max={0.35}
+          step={0.005}
+          hint="How far the bulges swing, as a fraction of the mean radius. Deeper means tighter corners, which limits how big the cog can be."
+          format={(v) => `${(v * 100).toFixed(1)}%`}
+        />
+      ) : null}
+
+      <SliderField
+        label="Second lobes"
+        value={shape.lobes2}
+        onChange={(v) => set({ lobes2: v })}
+        min={0}
+        max={8}
+        step={1}
+        hint="A second harmonic on top of the first. Two harmonics out of phase is what makes a shape look organic rather than regular."
+        format={(v) => (v === 0 ? 'none' : String(v))}
+      />
+      {shape.lobes2 > 0 ? (
+        <>
+          <SliderField
+            label="Second depth"
+            value={shape.amplitude2}
+            onChange={(v) => set({ amplitude2: v })}
+            min={0}
+            max={0.25}
+            step={0.005}
+            format={(v) => `${(v * 100).toFixed(1)}%`}
+          />
+          <SliderField
+            label="Second phase"
+            value={shape.phase2}
+            onChange={(v) => set({ phase2: v })}
+            min={0}
+            max={360}
+            step={5}
+            unit="°"
+          />
+        </>
+      ) : null}
+
+      {!isCircle(shape) ? (
+        <>
+          <div className="stats">
+            <Stat label="Shape" value={describeShape(shape)} />
+            {shaped ? (
+              <Stat
+                label="Tightest bend"
+                value={`${shaped.minConvexRho.toFixed(0)}mm`}
+                title="The cog's pitch radius must be smaller than this to reach into the corners"
+              />
+            ) : null}
+            {shaped ? (
+              <Stat
+                label="Largest cog"
+                value={`${Math.max(0, Math.floor((2 * shaped.minConvexRho) / module) - 10)}T`}
+                title="Comfortable limit, leaving clearance for the tips coming into mesh"
+              />
+            ) : null}
+          </div>
+          <p className="note">
+            The shape is scaled so its perimeter is exactly {spec.teeth} tooth pitches — teeth are spaced
+            along the curve, so the loop has to close on a whole tooth. Change the tooth count to change
+            the size.
+          </p>
+          <Button variant="ghost" onClick={() => update({ shape: circleShape() } as Partial<PartSpec>)}>
+            Back to a circle
+          </Button>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+function RingFields({ spec, built }: { spec: RingSpec; built?: Part }) {
   const design = useDesign((s) => s.design);
   const update = useUpdate(spec.id);
   return (
     <>
+      <ShapeFields spec={spec} built={built} />
+
       <h4 className="sub">Rim</h4>
       <NumberField
         label="Rim width"
@@ -317,13 +434,20 @@ function RingFields({ spec }: { spec: RingSpec }) {
         unit="mm"
         hint="Material outside the tooth roots. Allow 18mm or more if the ring will be split into segments, so the splice plates can take a bolt."
       />
-      <Toggle
-        label="Cut teeth on the outside too"
-        value={spec.outerTeeth}
-        onChange={(v) => update({ outerTeeth: v })}
-        hint="Needed for running a cog around the outside of the ring."
-      />
-      {spec.outerTeeth ? (
+      {isCircle(spec.shape) ? (
+        <Toggle
+          label="Cut teeth on the outside too"
+          value={spec.outerTeeth}
+          onChange={(v) => update({ outerTeeth: v })}
+          hint="Needed for running a cog around the outside of the ring."
+        />
+      ) : (
+        <p className="note">
+          Outer teeth are only available on a circular ring: the outside of a blob is a different curve,
+          whose perimeter is not a whole number of tooth pitches.
+        </p>
+      )}
+      {spec.outerTeeth && isCircle(spec.shape) ? (
         <>
           <NumberField
             label="Outer teeth"
