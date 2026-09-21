@@ -22,15 +22,21 @@ npx vitest run -t "clears all the way round the oval"
 `tsconfig.json` has `noUnusedLocals`, so an unused import fails `typecheck` but
 not `npm test`. Run both before calling anything done.
 
-## GitLab
+## GitHub
 
-This project is hosted on GitLab. Use **merge request**, not pull request, in
-commit messages and descriptions. `glab` is not installed on this machine, and
-there is no `.gitlab-ci.yml` yet — `npm run typecheck && npm test` is the whole
-check suite, so a CI job only needs those two.
+This project is hosted on GitHub at `edmonkey-nz/spiro-designer`. Use **pull
+request**, not merge request, in commit messages and descriptions. `gh` is not
+installed on this machine, so anything that needs the GitHub API has to go
+through the web UI.
 
-Note: `git remote origin` currently still points at a GitHub URL. Leave it
-alone unless asked; ask before repointing it.
+`.github/workflows/deploy.yml` runs `npm run typecheck && npm test` — the whole
+check suite — and then publishes `dist/` to GitHub Pages on every push to
+`main`.
+
+Pages serves the site from a subpath, so `base` in `vite.config.ts` has to stay
+`/spiro-designer/`. Dropping it 404s every asset in production while `npm run
+dev` carries on working, so the breakage only shows up after deploy. It also
+means the dev server lives at `http://127.0.0.1:5173/spiro-designer/`.
 
 ## Architecture
 
