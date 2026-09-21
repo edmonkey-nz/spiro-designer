@@ -11,6 +11,7 @@ import { defaultGearDefaults, newRingSpec } from '../src/geom/gear';
 import { bboxHeight, bboxWidth, circlePath, polar, TAU } from '../src/geom/types';
 import { nestParts, defaultNestOptions, sheetLayers, boundingCircle, packInHole } from '../src/geom/nest';
 import { buildCog, buildRing, newCogSpec } from '../src/geom/gear';
+import type { Part } from '../src/geom/types';
 
 const d = () => ({ ...defaultGearDefaults(), chordTol: 0.02 });
 const opts = defaultSegmentOptions();
@@ -375,5 +376,84 @@ describe('boundingCircle', () => {
     const c = boundingCircle(seg);
     const b = seg.meta.bbox;
     expect(c.r).toBeCloseTo(Math.hypot(bboxWidth(b), bboxHeight(b)) / 2, 6);
+  });
+});
+
+describe('packing large and small parts together', () => {
+  const defs = d();
+
+  /** Axis-aligned box a placement occupies on the sheet. */
+  const boxOf = (pl: { part: Part; dx: number; dy: number; rotation: number }) => {
+    const b = pl.part.meta.bbox;
+    const w = pl.rotation === 0 ? bboxWidth(b) : bboxHeight(b);
+    const h = pl.rotation === 0 ? bboxHeight(b) : bboxWidth(b);
+    const x = pl.dx + (pl.rotation === 0 ? b.minX : -b.maxY);
+    const y = pl.dy + (pl.rotation === 0 ? b.minY : b.minX);
+    return { x, y, w, h };
+  };
+
+  /** Closest approach between two boxes; negative means they overlap. */
+  const separation = (a: ReturnType<typeof boxOf>, b: ReturnType<typeof boxOf>) => {
+    const dx = Math.max(b.x - (a.x + a.w), a.x - (b.x + b.w));
+    const dy = Math.max(b.y - (a.y + a.h), a.y - (b.y + b.h));
+    return Math.max(dx, dy);
+  };
+
+  /**
+   * The case that showed shelf packing up: one ring almost as tall as the
+   * sheet, plus parts small enough to tuck in beside it. A shelf-based packer
+   * gives the ring a shelf the full height of the sheet and then cannot reach
+   * the column above anything standing next to it, so the smallest cog spilled
+   * onto a second sheet with most of the first still empty.
+   */
+  const bigRing = buildRing({ ...newRingSpec('big', 170), rimWidth: 15 }, defs, 0.18);
+  const cogs = [72, 40, 27, 18].map((t) => buildCog(newCogSpec(`c${t}`, t), defs, 0.18));
+
+  it('fits a near-sheet-height ring and four cogs on one sheet', () => {
+    const res = nestParts([bigRing, ...cogs], { ...defaultNestOptions(), fillHoles: false });
+    expect(res.rejected).toHaveLength(0);
+    expect(res.sheets).toHaveLength(1);
+    expect(res.sheets[0]!.placements).toHaveLength(5);
+  });
+
+  it('keeps at least the requested gap between every pair of parts', () => {
+    const o = { ...defaultNestOptions(), fillHoles: false };
+    for (const sheet of nestParts([bigRing, ...cogs], o).sheets) {
+      const boxes = sheet.placements.filter((p) => !p.insideOf).map(boxOf);
+      for (let i = 0; i < boxes.length; i++) {
+        for (let j = i + 1; j < boxes.length; j++) {
+          expect(separation(boxes[i]!, boxes[j]!)).toBeGreaterThanOrEqual(o.gap - 1e-6);
+        }
+      }
+    }
+  });
+
+  it('stays inside the sheet margins', () => {
+    const o = defaultNestOptions();
+    for (const sheet of nestParts([bigRing, ...cogs], o).sheets) {
+      for (const box of sheet.placements.map(boxOf)) {
+        expect(box.x).toBeGreaterThanOrEqual(o.margin - 1e-6);
+        expect(box.y).toBeGreaterThanOrEqual(o.margin - 1e-6);
+        expect(box.x + box.w).toBeLessThanOrEqual(o.bedWidth - o.margin + 1e-6);
+        expect(box.y + box.h).toBeLessThanOrEqual(o.bedHeight - o.margin + 1e-6);
+      }
+    }
+  });
+
+  it('uses no more sheets once hole filling is switched on as well', () => {
+    const loose = nestParts([bigRing, ...cogs], { ...defaultNestOptions(), fillHoles: false });
+    const nested = nestParts([bigRing, ...cogs], defaultNestOptions());
+    expect(nested.sheets.length).toBeLessThanOrEqual(loose.sheets.length);
+    expect(nested.sheets.flatMap((s) => s.placements)).toHaveLength(5);
+  });
+
+  it('spreads onto more sheets only when the parts genuinely do not fit', () => {
+    const many = Array.from({ length: 6 }, (_, i) =>
+      buildRing({ ...newRingSpec(`r${i}`, 170), rimWidth: 15 }, defs, 0.18),
+    );
+    const res = nestParts(many, { ...defaultNestOptions(), fillHoles: false });
+    // Two 548mm rings cannot share a 880x580 sheet, so this needs six.
+    expect(res.sheets).toHaveLength(6);
+    expect(res.rejected).toHaveLength(0);
   });
 });

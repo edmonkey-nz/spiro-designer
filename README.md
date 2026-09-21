@@ -70,6 +70,13 @@ are split into arc segments at tooth-space centres — never through a tooth —
 and each joint gets a splice plate with bolt and alignment-dowel holes plus
 match marks. Parts are nested onto sheets you can preview before exporting.
 
+**Sheets are packed, not shelved.** Parts go down with MaxRects
+(best-short-side-fit), which tracks free space as overlapping rectangles. The
+obvious first approach — shelves — fails badly here: a 550mm ring claims a
+shelf as tall as the sheet, and the column above every smaller part standing
+next to it becomes unreachable, so a 60mm cog spills onto a second sheet with
+most of the first still empty.
+
 **Cogs pack inside the rings.** A ring's interior is scrap, so smaller parts
 are packed into it first, tangent-placed and clustered toward the centre. Five
 cogs drop inside a 157-tooth ring, which is a whole sheet saved. It recurses,
@@ -103,7 +110,7 @@ src/
     curves.ts     hypo/epi/rack/cog-on-cog maths, closure and petal counts
     shape.ts      non-circular pitch curves: arc length, curvature, offsets
     shapedRing.ts one tooth period per pitch along a curve, and rolling on it
-    nest.ts       packs parts into ring interiors, then shelf packs sheets
+    nest.ts       packs parts into ring interiors, then MaxRects onto sheets
     svg.ts        mm-exact SVG writer (the only place that knows SVG is Y-down)
     hershey.ts    single-stroke engraving font
     validate.ts   design rules, advisory rather than blocking
@@ -119,7 +126,7 @@ angles in radians. `src/geom` never imports React and never touches the DOM.
 ## Tests
 
 ```
-npm test          # 127 tests
+npm test          # 132 tests
 npm run typecheck
 ```
 
@@ -152,10 +159,10 @@ geometry.
 
 ## Known limits
 
-- The sheet pass is bounding-box shelf packing, not true outline nesting. Hole
-  filling is exact (a ring's interior really is a circle), but the parts that
-  end up side by side are placed by bounding box. Fine for round parts on a big
-  bed; swap `nest.ts` for a no-fit-polygon implementation behind the same
+- The sheet pass packs bounding boxes (MaxRects, best-short-side-fit), not true
+  outlines. Hole filling is exact, because a ring's interior really is a circle,
+  but parts that end up side by side are placed by box. Fine for round parts on
+  a big bed; swap `nest.ts` for a no-fit-polygon implementation behind the same
   interface if sheet utilisation ever matters more.
 - Hole filling is greedy best-fit: the smallest hole that will take a part gets
   first refusal. Like any greedy packer it can be beaten on specific inputs.

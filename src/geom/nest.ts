@@ -8,14 +8,18 @@
  *     sheet's worth of area recovered. Nesting is recursive: a small ring
  *     packed inside a large one still gets its own interior filled.
  *
- *  2. **Shelf pack** whatever is left (including the rings, now carrying their
- *     passengers) onto sheets, first-fit decreasing by height.
+ *  2. **Pack** whatever is left (including the rings, now carrying their
+ *     passengers) onto sheets with MaxRects, best-short-side-fit.
  *
- * The shelf pass works on bounding boxes, not true outlines. For mostly-round
- * parts on a 900x600 bed the difference is small, and the predictability is
- * worth more than the last few percent: you can look at the preview and know
- * what you are going to get. Hole filling is where the real saving is, and
- * that part is exact, because a ring's empty interior is an exact circle.
+ * The packing pass works on bounding boxes, not true outlines, but it does
+ * track the free space as a set of overlapping rectangles rather than as
+ * shelves. Shelves were the obvious first choice and they are badly wrong
+ * here: one 550mm ring claims a shelf as tall as the sheet, and the whole
+ * column above every smaller part beside it becomes unreachable, so a 60mm
+ * cog spills onto a second sheet with 70% of the first still empty.
+ *
+ * Hole filling is where the largest saving is, and that part is exact,
+ * because a ring's empty interior really is a circle.
  */
 
 import { bboxHeight, bboxWidth, transformPath, type Part, type Path } from './types';
@@ -200,19 +204,6 @@ interface Node {
   parent: Node | null;
 }
 
-interface Box {
-  node: Node;
-  w: number;
-  h: number;
-  rotation: number;
-}
-
-function boxFor(node: Node, rotate: boolean): Box {
-  const w = bboxWidth(node.part.meta.bbox);
-  const h = bboxHeight(node.part.meta.bbox);
-  return rotate ? { node, w: h, h: w, rotation: Math.PI / 2 } : { node, w, h, rotation: 0 };
-}
-
 /**
  * Pack parts into ring interiors, best-fit: the *smallest* hole that will take
  * a part gets first refusal on it.
@@ -248,6 +239,7 @@ function fillHoles(nodes: Node[], gap: number): void {
   }
 }
 
+/** Walk a nesting tree, turning it into absolute placements. */
 function expand(node: Node, dx: number, dy: number, rot: number, out: Placement[], insideOf?: string): void {
   out.push({ part: node.part, dx, dy, rotation: rot, insideOf });
   const c = Math.cos(rot);
@@ -265,9 +257,128 @@ function expand(node: Node, dx: number, dy: number, rot: number, out: Placement[
   }
 }
 
+interface Placed {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * MaxRects bin packing, best-short-side-fit.
+ *
+ * Free space is kept as a list of maximal rectangles, which may overlap. Each
+ * placement splits every free rectangle it touches and then drops any that are
+ * wholly inside another. It is slower than shelf packing and it beats it
+ * comfortably on exactly the case that matters here: a few large discs with
+ * small ones to tuck around them.
+ */
+class MaxRects {
+  private free: Placed[];
+
+  constructor(width: number, height: number) {
+    this.free = [{ x: 0, y: 0, w: width, h: height }];
+  }
+
+  insert(w: number, h: number, allowRotate: boolean): { x: number; y: number; rotated: boolean } | null {
+    let best: (Placed & { rotated: boolean }) | null = null;
+    let bestShort = Infinity;
+    let bestLong = Infinity;
+
+    for (const fr of this.free) {
+      const tries: [number, number, boolean][] = allowRotate
+        ? [
+            [w, h, false],
+            [h, w, true],
+          ]
+        : [[w, h, false]];
+      for (const [pw, ph, rotated] of tries) {
+        if (pw > fr.w + 1e-9 || ph > fr.h + 1e-9) continue;
+        const short = Math.min(fr.w - pw, fr.h - ph);
+        const long = Math.max(fr.w - pw, fr.h - ph);
+        if (short < bestShort - 1e-9 || (Math.abs(short - bestShort) < 1e-9 && long < bestLong)) {
+          best = { x: fr.x, y: fr.y, w: pw, h: ph, rotated };
+          bestShort = short;
+          bestLong = long;
+        }
+      }
+    }
+    if (!best) return null;
+
+    const next: Placed[] = [];
+    for (const fr of this.free) {
+      if (!splitFree(fr, best, next)) next.push(fr);
+    }
+    this.free = pruneFree(next);
+    return { x: best.x, y: best.y, rotated: best.rotated };
+  }
+}
+
+/**
+ * Split a free rectangle around a placed one, pushing the remainders.
+ * Returns false when they do not overlap, leaving the caller to keep it whole.
+ */
+function splitFree(fr: Placed, used: Placed, out: Placed[]): boolean {
+  if (
+    used.x >= fr.x + fr.w - 1e-9 ||
+    used.x + used.w <= fr.x + 1e-9 ||
+    used.y >= fr.y + fr.h - 1e-9 ||
+    used.y + used.h <= fr.y + 1e-9
+  ) {
+    return false;
+  }
+
+  if (used.x < fr.x + fr.w && used.x + used.w > fr.x) {
+    if (used.y > fr.y && used.y < fr.y + fr.h) {
+      out.push({ x: fr.x, y: fr.y, w: fr.w, h: used.y - fr.y });
+    }
+    if (used.y + used.h < fr.y + fr.h) {
+      out.push({ x: fr.x, y: used.y + used.h, w: fr.w, h: fr.y + fr.h - (used.y + used.h) });
+    }
+  }
+  if (used.y < fr.y + fr.h && used.y + used.h > fr.y) {
+    if (used.x > fr.x && used.x < fr.x + fr.w) {
+      out.push({ x: fr.x, y: fr.y, w: used.x - fr.x, h: fr.h });
+    }
+    if (used.x + used.w < fr.x + fr.w) {
+      out.push({ x: used.x + used.w, y: fr.y, w: fr.x + fr.w - (used.x + used.w), h: fr.h });
+    }
+  }
+  return true;
+}
+
+const inside = (a: Placed, b: Placed): boolean =>
+  a.x >= b.x - 1e-9 && a.y >= b.y - 1e-9 && a.x + a.w <= b.x + b.w + 1e-9 && a.y + a.h <= b.y + b.h + 1e-9;
+
+/** Drop free rectangles that are wholly inside another, which splitting creates freely. */
+function pruneFree(list: Placed[]): Placed[] {
+  const out: Placed[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i]!;
+    if (a.w <= 1e-9 || a.h <= 1e-9) continue;
+    let redundant = false;
+    for (let j = 0; j < list.length && !redundant; j++) {
+      if (i === j) continue;
+      const b = list[j]!;
+      // Identical rectangles would swallow each other, so keep the earlier one.
+      if (inside(a, b) && (!inside(b, a) || j < i)) redundant = true;
+    }
+    if (!redundant) out.push(a);
+  }
+  return out;
+}
+
+interface Item {
+  node: Node;
+  w: number;
+  h: number;
+}
+
 export function nestParts(parts: Part[], opts: NestOptions = defaultNestOptions()): NestResult {
   const availW = opts.bedWidth - opts.margin * 2;
   const availH = opts.bedHeight - opts.margin * 2;
+  const gap = opts.gap;
+  const allowRotate = opts.allowRotate !== false;
 
   const nodes: Node[] = parts.map((part) => ({
     part,
@@ -277,98 +388,89 @@ export function nestParts(parts: Part[], opts: NestOptions = defaultNestOptions(
     parent: null,
   }));
 
-  if (opts.fillHoles !== false) fillHoles(nodes, opts.gap);
+  if (opts.fillHoles !== false) fillHoles(nodes, gap);
 
-  const boxes: Box[] = [];
+  const fits = (w: number, h: number) =>
+    (w <= availW + 1e-9 && h <= availH + 1e-9) || (allowRotate && h <= availW + 1e-9 && w <= availH + 1e-9);
+
+  const items: Item[] = [];
   const rejected: Part[] = [];
+  const consider = (node: Node) => {
+    const w = bboxWidth(node.part.meta.bbox);
+    const h = bboxHeight(node.part.meta.bbox);
+    if (fits(w, h)) {
+      items.push({ node, w, h });
+      return true;
+    }
+    return false;
+  };
+
   for (const node of nodes) {
-    if (node.parent) continue; // rides inside another part
-    const flat = boxFor(node, false);
-    if (flat.w <= availW && flat.h <= availH) {
-      boxes.push(flat);
-      continue;
-    }
-    const turned = boxFor(node, true);
-    if (opts.allowRotate !== false && turned.w <= availW && turned.h <= availH) {
-      boxes.push(turned);
-      continue;
-    }
+    if (node.parent) continue;
+    if (consider(node)) continue;
     // A container that will not fit takes its passengers with it, so release
     // them back to the top level rather than losing them silently.
     for (const child of node.children) child.node.parent = null;
     node.children = [];
     rejected.push(node.part);
   }
-
-  // Re-admit anything freed by a rejected container.
   for (const node of nodes) {
-    if (node.parent || rejected.includes(node.part) || boxes.some((b) => b.node === node)) continue;
-    const flat = boxFor(node, false);
-    if (flat.w <= availW && flat.h <= availH) boxes.push(flat);
-    else {
-      const turned = boxFor(node, true);
-      if (opts.allowRotate !== false && turned.w <= availW && turned.h <= availH) boxes.push(turned);
-      else rejected.push(node.part);
-    }
+    if (node.parent || rejected.includes(node.part) || items.some((i) => i.node === node)) continue;
+    if (!consider(node)) rejected.push(node.part);
   }
 
-  // Tallest first: shelf packing wastes least when each shelf is started by its
-  // own tallest member.
-  boxes.sort((a, b) => b.h - a.h || b.w - a.w);
+  // Largest first. Placing the big discs before the small ones is what leaves
+  // the small ones somewhere sensible to go.
+  items.sort((a, b) => Math.max(b.w, b.h) - Math.max(a.w, a.h) || b.w * b.h - a.w * a.h);
 
+  // Every part is inflated by one gap, and the bin by one gap, so neighbours
+  // end up exactly `gap` apart while a part on the far edge still fits the
+  // usable area.
+  const bins: MaxRects[] = [];
   const sheets: Sheet[] = [];
-  let current: { placements: Placement[]; shelfY: number; shelfH: number; cursorX: number } | null = null;
-  let usedArea = 0;
+  const used: number[] = [];
 
-  const flush = () => {
-    if (!current) return;
-    sheets.push({
-      index: sheets.length,
-      placements: current.placements,
-      utilisation: usedArea / (availW * availH),
-      nested: current.placements.filter((p) => p.insideOf).length,
-    });
-    current = null;
-    usedArea = 0;
-  };
-
-  const startSheet = () => {
-    current = { placements: [], shelfY: 0, shelfH: 0, cursorX: 0 };
-  };
-
-  for (const box of boxes) {
-    if (!current) startSheet();
-    let c = current!;
-
-    if (c.cursorX > 0 && c.cursorX + box.w > availW) {
-      c.shelfY += c.shelfH + opts.gap;
-      c.shelfH = 0;
-      c.cursorX = 0;
+  for (const item of items) {
+    let target = -1;
+    let at: { x: number; y: number; rotated: boolean } | null = null;
+    for (let b = 0; b < bins.length; b++) {
+      at = bins[b]!.insert(item.w + gap, item.h + gap, allowRotate);
+      if (at) {
+        target = b;
+        break;
+      }
     }
-    if (c.shelfY + box.h > availH) {
-      flush();
-      startSheet();
-      c = current!;
+    if (!at) {
+      bins.push(new MaxRects(availW + gap, availH + gap));
+      sheets.push({ index: sheets.length, placements: [], utilisation: 0, nested: 0 });
+      used.push(0);
+      target = bins.length - 1;
+      at = bins[target]!.insert(item.w + gap, item.h + gap, allowRotate);
+      if (!at) {
+        rejected.push(item.node.part);
+        continue;
+      }
     }
 
-    // The part's own bbox may not start at its origin, so shift by its minimum.
-    const bb = box.node.part.meta.bbox;
-    const localMinX = box.rotation === 0 ? bb.minX : -bb.maxY;
-    const localMinY = box.rotation === 0 ? bb.minY : bb.minX;
+    const rotation = at.rotated ? Math.PI / 2 : 0;
+    const bb = item.node.part.meta.bbox;
+    const localMinX = rotation === 0 ? bb.minX : -bb.maxY;
+    const localMinY = rotation === 0 ? bb.minY : bb.minX;
 
     expand(
-      box.node,
-      opts.margin + c.cursorX - localMinX,
-      opts.margin + c.shelfY - localMinY,
-      box.rotation,
-      c.placements,
+      item.node,
+      opts.margin + at.x - localMinX,
+      opts.margin + at.y - localMinY,
+      rotation,
+      sheets[target]!.placements,
     );
-    usedArea += box.w * box.h;
-
-    c.cursorX += box.w + opts.gap;
-    c.shelfH = Math.max(c.shelfH, box.h);
+    used[target] = used[target]! + item.w * item.h;
   }
-  flush();
+
+  for (const sheet of sheets) {
+    sheet.utilisation = used[sheet.index]! / (availW * availH);
+    sheet.nested = sheet.placements.filter((p) => p.insideOf).length;
+  }
 
   return { sheets, rejected };
 }
