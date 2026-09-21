@@ -3,6 +3,9 @@
 Design the cogs and rings for a large-scale physical spirograph, see what they
 will draw, and export 1:1 SVG for a laser cutter.
 
+**[Try it in your browser](https://edmonkey-nz.github.io/spiro-designer/)** — no
+install, no sign-up.
+
 It exists to answer two questions before you burn a sheet of ply:
 
 - will these two tooth counts mesh and roll without binding?
@@ -10,7 +13,7 @@ It exists to answer two questions before you burn a sheet of ply:
 
 ```
 npm install
-npm run dev     # http://127.0.0.1:5173
+npm run dev     # http://127.0.0.1:5173/spiro-designer/
 ```
 
 Static app, nothing leaves your machine. Designs save as JSON.
